@@ -1,0 +1,1097 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+```{r}
+library(tidyverse)
+library(tidytext)
+library(lubridate)
+library(ggthemes)
+```
+
+
+```{r}
+df <- read_csv("~/downloads/reddit_coffee_submissions.csv")
+```
+
+
+
+
+```{r}
+# create date
+
+df <- df %>% mutate(dt = as.Date(created_date))
+```
+
+
+```{r}
+custom_stop_words <- tibble(word = c("na", "drink", "cocktail", "recipe", "shake", "ice", "1", "2", "oz", "ounces", "http","https", "cocktails", "recipes", "amp", "4", "favorite", "love",
+                                     "removed", "imgur", "i.imgur", "NA", "keywords", "na", "utf8", "amp", "qid", "sr"))
+```
+
+
+```{r}
+df <- df %>% mutate(combined_text = paste0(title," ", text))
+```
+
+```{r}
+tokenized_df <- df %>%
+  select(post_id, combined_text, dt, score, numcomms) %>% 
+  unnest_tokens(word, combined_text)
+
+tokenized_df <- tokenized_df %>% 
+  anti_join(stop_words) %>% 
+  anti_join(custom_stop_words)
+
+
+bigram_df <- df %>% 
+  select(post_id, combined_text, dt, score, numcomms) %>% 
+  unnest_tokens(bigram, combined_text, "ngrams",  n = 2)
+```
+
+
+posts per year
+```{r}
+post_per_year <- df %>% count(year = year(dt)) %>% rename(yearly_posts = n)
+```
+
+Number of posts seems to have gone down quite a bit
+
+```{r}
+post_per_year %>%
+  ggplot(aes(x = year, y = yearly_posts)) +
+  geom_col() +
+  scale_x_continuous(breaks = c(2010:2019))
+```
+
+```{r}
+tokenized_df %>% 
+  count(word, year = year(dt), sort = T) %>% 
+  filter(n > 2000) %>% 
+  ggplot(aes(x = reorder(word, n), y = n)) +
+  geom_col() +
+  coord_flip() +
+  facet_wrap(~year, scales = "free")
+```
+
+# Visualizing bigrams
+```{r}
+library(ggplot2)
+library(igraph)
+library(ggraph)
+
+count_bigrams <- function(dataset) {
+  dataset %>%
+    unnest_tokens(bigram, text, token = "ngrams", n = 2) %>%
+    separate(bigram, c("word1", "word2"), sep = " ") %>%
+    filter(!word1 %in% stop_words$word,
+           !word2 %in% stop_words$word,
+           !word1 %in% custom_stop_words$word,
+           !word2 %in% custom_stop_words$word) %>%
+    count(word1, word2, sort = TRUE)
+}
+
+visualize_bigrams <- function(bigrams, min_number = 600) {
+  set.seed(2016)
+  a <- grid::arrow(type = "closed", length = unit(.15, "inches"))
+  
+  bigrams %>%
+    filter(n > min_number) %>% 
+    graph_from_data_frame() %>%
+    ggraph(layout = "fr") +
+    geom_edge_link(aes(edge_alpha = n), show.legend = FALSE, arrow = a) +
+    geom_node_point(color = "lightblue", size = 5) +
+    geom_node_text(aes(label = name), vjust = 1, hjust = 1) +
+    theme_void()
+}
+```
+
+
+```{r}
+bg <- count_bigrams(df)
+
+
+# play with min_number until chart is as dense as you want it to be
+bg %>%
+  filter(!is.na(word1),
+         !is.na(word2)) %>% 
+  visualize_bigrams(min_number = 350)
+```
+
+```{r}
+word_over_time_month <- function(ingredient){
+  tokenized_df %>%
+    mutate(month = as.Date(cut(tokenized_df$dt, breaks = "month"))) %>% 
+    distinct() %>% 
+    filter(word == ingredient) %>% 
+    count(month) %>% 
+    ggplot(aes(x = month, y = n)) +
+    geom_col()
+}
+
+word_over_time_year <- function(ingredient){
+  tokenized_df %>%
+    mutate(year = year(dt)) %>% 
+    filter(word == ingredient) %>% 
+    distinct() %>% 
+    count(year) %>% 
+    inner_join(post_per_year) %>% 
+    mutate(posts_per_thousand = 1000 * n / yearly_posts)
+}
+
+
+bigram_year <- function(two_words){
+  bigram_df %>%
+    mutate(year = year(dt)) %>% 
+    filter(bigram == two_words) %>% 
+    distinct() %>% 
+    count(year) %>% 
+    inner_join(post_per_year) %>% 
+    mutate(posts_per_thousand = 1000 * n / yearly_posts)
+}
+
+```
+
+Setting a hex color for plotting
+```{r}
+coffee <- "#693d26"
+```
+
+
+# cold brew
+
+```{r}
+bigram_year("cold brew") %>% 
+  ggplot(aes(x = year, y = posts_per_thousand)) +
+  geom_col(fill = coffee) +
+  theme_wsj() +
+  scale_x_continuous(breaks = c(2010:2019))
+```
+
+
+```{r}
+bigram_year("iced coffee") %>% 
+  ggplot(aes(x = year, y = posts_per_thousand)) +
+  geom_col(fill = coffee) +
+  theme_wsj() +
+  scale_x_continuous(breaks = c(2010:2019))
+```
+
+
+# iced coffee vs cold brew
+
+```{r}
+coldbrew <- bigram_year("cold brew") %>%
+  mutate(term = "cold brew")
+
+iced_coffee <- bigram_year("iced coffee") %>% 
+  mutate(term = "iced coffee")
+
+cold <- coldbrew %>%
+  rbind(iced_coffee)
+
+cold %>% 
+  ggplot(aes(x = year, y = posts_per_thousand, group = term)) +
+  geom_line(aes(color = term)) +
+  theme_wsj() +
+  theme(
+    axis.title = element_text(),
+    axis.title.y = element_text(size = 11, face = "bold"),
+    axis.title.x = element_text(size = 11, face = "bold")
+  ) +
+  scale_x_continuous(breaks = c(2010:2019)) +
+  labs(x = "", y = "Mentions per Thousand Posts", title = "Mentions of 'French Press' \non Reddit's Coffee Forum")
+```
+
+```{r}
+scale_fill_discrete(c(coffee, "#f0cf8d"))
+
+cold %>% 
+  ggplot(aes(x = year, y = posts_per_thousand, group = term)) +
+  geom_col(aes(fill = term)) +
+  scale_fill_manual(values = c(coffee, "#f0cf8d")) +
+  theme_wsj() +
+  theme(
+    axis.title = element_text(),
+    axis.title.y = element_text(size = 11, face = "bold"),
+    axis.title.x = element_text(size = 11, face = "bold"),
+    legend.position = "bottom"
+  ) +
+  scale_x_continuous(breaks = c(2010:2019)) +
+  labs(x = "", y = "Mentions per Thousand Posts", title = "Mentions of 'Cold Brew' and\n'Iced Coffee' on Reddit's Coffee Forum")
+```
+
+```{r}
+bigram_year("almond milk") %>% 
+  ggplot(aes(x = year, y = posts_per_thousand)) +
+  geom_col(fill = coffee) +
+  theme_wsj() +
+      theme(
+    axis.title = element_text(),
+    axis.title.y = element_text(size = 11, face = "bold"),
+    axis.title.x = element_text(size = 11, face = "bold"),
+    legend.position = "bottom"
+  ) +
+  scale_x_continuous(breaks = c(2010:2019)) +
+  labs(x = "", y = "Mentions per Thousand Posts", title = "Mentions of 'Almond Milk' \non Reddit's Coffee Forum")
+  ```
+
+
+```{r}
+bigram_year("oat milk") %>% 
+  ggplot(aes(x = year, y = posts_per_thousand)) +
+  geom_col(fill = coffee) +
+  theme_wsj() +
+    theme(
+    axis.title = element_text(),
+    axis.title.y = element_text(size = 11, face = "bold"),
+    axis.title.x = element_text(size = 11, face = "bold"),
+    legend.position = "bottom"
+  ) +
+  scale_x_continuous(breaks = c(2010:2019)) +
+  labs(x = "", y = "Mentions per Thousand Posts", title = "Mentions of 'Oat Milk' \non Reddit's Coffee Forum")
+
+```
+```{r}
+bigram_year("coconut milk") %>% 
+  ggplot(aes(x = year, y = posts_per_thousand)) +
+  geom_col(fill = coffee) +
+  theme_wsj() +
+  scale_x_continuous(breaks = c(2010:2019)) +
+  labs(x = "", y = "Mentions per Thousand Posts", title = "Mentions of 'Coconut Milk' \non Reddit's Coffee Forum")
+```
+# milk types
+
+different function to include the word "whole" because it is in stop words dictionary
+```{r}
+count_bigrams_milk <- function(dataset) {
+  dataset %>%
+    unnest_tokens(bigram, text, token = "ngrams", n = 2) %>%
+    separate(bigram, c("word1", "word2"), sep = " ") %>%
+    filter(#!word1 %in% stop_words$word,
+           !word2 %in% stop_words$word,
+           !word1 %in% custom_stop_words$word,
+           !word2 %in% custom_stop_words$word) %>%
+    count(word1, word2, sort = TRUE)
+}
+
+```
+
+
+```{r}
+milk_counts <- df %>% 
+  filter(dt > '2018-01-01') %>% 
+  count_bigrams_milk() %>% 
+  filter(word2 == "milk") %>% 
+  arrange(-n)
+```
+
+```{r}
+milk_words <- c("regular", "whole", "skim", "cow", "cow's", "cashew", "nut", "almond", "oat", "soy", "goat", "macadamia", "plant", "raw", "condensed", "chocolate")
+
+milk_counts$word1 <- gsub("cow's", "cow", milk_counts$word1)
+
+milk_counts <- milk_counts %>%
+  group_by(word1) %>% 
+  summarise(n = sum(n)) %>% 
+  arrange(-n)
+
+milk_counts %>% 
+  filter(word1 %in% milk_words) %>% 
+  ggplot(aes(x = reorder(word1, n), y = n)) +
+  geom_col(fill = coffee) +
+  coord_flip() +
+  theme_wsj() +
+  labs(x = "Milk Type", y = "Mentions per Thousand Posts", title = "Most commonly mentioned\nmilk types on Reddit's coffee forum",
+       caption = "2018-2019")
+```
+
+#styles
+
+```{r}
+word_over_time_year("espresso") %>% 
+  filter(year > 2010) %>% 
+  ggplot(aes(x = year, y = posts_per_thousand)) +
+  geom_col(fill = coffee) +
+  theme_wsj() +
+  theme(
+    axis.title = element_text(),
+    axis.title.y = element_text(size = 11, face = "bold"),
+    axis.title.x = element_text(size = 11, face = "bold"),
+    legend.position = "bottom"
+  ) +
+  scale_x_continuous(breaks = c(2010:2019)) +
+
+  labs(x = "", y = "Mentions per Thousand Posts", title = "Mentions of 'Espresso' \non Reddit's Coffee Forum")
+```
+
+Cappuccino
+
+```{r}
+word_over_time_year("cappuccino") %>% 
+  filter(year > 2010) %>% 
+  ggplot(aes(x = year, y = posts_per_thousand)) +
+  geom_col(fill = coffee) +
+  theme_wsj() +
+  theme(
+    axis.title = element_text(),
+    axis.title.y = element_text(size = 11, face = "bold"),
+    axis.title.x = element_text(size = 11, face = "bold"),
+    legend.position = "bottom"
+  ) +
+  scale_x_continuous(breaks = c(2010:2019)) +
+
+  labs(x = "", y = "Mentions per Thousand Posts", title = "Mentions of 'Cappuccino' \non Reddit's Coffee Forum")
+```
+
+
+```{r}
+word_over_time_year("latte") %>% 
+  filter(year > 2010) %>% 
+  ggplot(aes(x = year, y = posts_per_thousand)) +
+  geom_col(fill = coffee) +
+  theme_wsj() +
+  theme(
+    axis.title = element_text(),
+    axis.title.y = element_text(size = 11, face = "bold"),
+    axis.title.x = element_text(size = 11, face = "bold"),
+    legend.position = "bottom"
+  ) +
+  scale_x_continuous(breaks = c(2010:2019)) +
+
+  labs(x = "", y = "Mentions per Thousand Posts", title = "Mentions of 'Latte' \non Reddit's Coffee Forum")
+```
+
+Cortado
+
+```{r}
+word_over_time_year("cortado") %>% 
+  filter(year > 2010) %>% 
+  ggplot(aes(x = year, y = posts_per_thousand)) +
+  geom_col(fill = coffee) +
+  theme_wsj() +
+  theme(
+    axis.title = element_text(),
+    axis.title.y = element_text(size = 11, face = "bold"),
+    axis.title.x = element_text(size = 11, face = "bold"),
+    legend.position = "bottom"
+  ) +
+  scale_x_continuous(breaks = c(2010:2019)) +
+
+  labs(x = "", y = "Mentions per Thousand Posts", title = "Mentions of 'Cortado' \non Reddit's Coffee Forum")
+```
+
+# machiatto
+
+```{r}
+word_over_time_year("macchiato") %>% 
+  filter(year > 2010) %>% 
+  ggplot(aes(x = year, y = posts_per_thousand)) +
+  geom_col(fill = coffee) +
+  theme_wsj() +
+  theme(
+    axis.title = element_text(),
+    axis.title.y = element_text(size = 11, face = "bold"),
+    axis.title.x = element_text(size = 11, face = "bold"),
+    legend.position = "bottom"
+  ) +
+  scale_x_continuous(breaks = c(2010:2019)) +
+
+  labs(x = "", y = "Mentions per Thousand Posts", title = "Mentions of 'Macchiato' \non Reddit's Coffee Forum")
+```
+
+
+```{r}
+word_over_time_year("ristretto") %>% 
+  filter(year > 2010) %>% 
+  ggplot(aes(x = year, y = posts_per_thousand)) +
+  geom_col(fill = coffee) +
+  theme_wsj() +
+  theme(
+    axis.title = element_text(),
+    axis.title.y = element_text(size = 11, face = "bold"),
+    axis.title.x = element_text(size = 11, face = "bold"),
+    legend.position = "bottom"
+  ) +
+  scale_x_continuous(breaks = c(2010:2019)) +
+
+  labs(x = "", y = "Mentions per Thousand Posts", title = "Mentions of 'Ristretto' \non Reddit's Coffee Forum")
+```
+
+
+
+```{r}
+word_over_time_year("americano") %>% 
+  filter(year > 2010) %>% 
+  ggplot(aes(x = year, y = posts_per_thousand)) +
+  geom_col(fill = coffee) +
+  theme_wsj() +
+  theme(
+    axis.title = element_text(),
+    axis.title.y = element_text(size = 11, face = "bold"),
+    axis.title.x = element_text(size = 11, face = "bold"),
+    legend.position = "bottom"
+  ) +
+  scale_x_continuous(breaks = c(2010:2019)) +
+
+  labs(x = "", y = "Mentions per Thousand Posts", title = "Mentions of 'Americano' \non Reddit's Coffee Forum")
+```
+
+```{r}
+word_over_time_year("affogato") %>% 
+  filter(year > 2010) %>% 
+  ggplot(aes(x = year, y = posts_per_thousand)) +
+  geom_col(fill = coffee) +
+  theme_wsj() +
+  theme(
+    axis.title = element_text(),
+    axis.title.y = element_text(size = 11, face = "bold"),
+    axis.title.x = element_text(size = 11, face = "bold"),
+    legend.position = "bottom"
+  ) +
+  scale_x_continuous(breaks = c(2010:2019)) +
+
+  labs(x = "", y = "Mentions per Thousand Posts", title = "Mentions of 'Affogato' \non Reddit's Coffee Forum")
+```
+
+```{r}
+bigram_year("flat white") %>% 
+  filter(year > 2010) %>% 
+  ggplot(aes(x = year, y = posts_per_thousand)) +
+  geom_col(fill = coffee) +
+  theme_wsj() +
+  theme(
+    axis.title = element_text(),
+    axis.title.y = element_text(size = 11, face = "bold"),
+    axis.title.x = element_text(size = 11, face = "bold"),
+    legend.position = "bottom"
+  ) +
+  scale_x_continuous(breaks = c(2010:2019)) +
+
+  labs(x = "", y = "Mentions per Thousand Posts", title = "Mentions of 'Flat White' \non Reddit's Coffee Forum")
+
+```
+
+
+```{r}
+word_over_time_year("mocha") %>% 
+  filter(year > 2010) %>% 
+  ggplot(aes(x = year, y = posts_per_thousand)) +
+  geom_col(fill = coffee) +
+  theme_wsj() +
+  theme(
+    axis.title = element_text(),
+    axis.title.y = element_text(size = 11, face = "bold"),
+    axis.title.x = element_text(size = 11, face = "bold"),
+    legend.position = "bottom"
+  ) +
+  scale_x_continuous(breaks = c(2010:2019)) +
+
+  labs(x = "", y = "Mentions per Thousand Posts", title = "Mentions of 'Mocha' \non Reddit's Coffee Forum")
+```
+# methods
+
+```{r}
+bigram_year("pour over") %>% 
+  ggplot(aes(x = year, y = posts_per_thousand)) +
+  geom_col(fill = coffee) +
+  theme_wsj() +
+  theme(
+    axis.title = element_text(),
+    axis.title.y = element_text(size = 11, face = "bold"),
+    axis.title.x = element_text(size = 11, face = "bold"),
+    legend.position = "bottom"
+  ) +
+  scale_x_continuous(breaks = c(2010:2019)) +
+
+  labs(x = "", y = "Mentions per Thousand Posts", title = "Mentions of 'Pour Over' \non Reddit's Coffee Forum")
+```
+
+
+```{r}
+bigram_year("turkish coffee") %>% 
+  ggplot(aes(x = year, y = posts_per_thousand)) +
+  geom_col(fill = coffee) +
+  theme_wsj() +
+  scale_x_continuous(breaks = c(2010:2019)) +
+  labs(x = "", y = "Mentions per Thousand Posts", title = "Mentions of 'Turkish Coffee' \non Reddit's Coffee Forum")
+```
+
+drip
+```{r}
+word_over_time_year("drip") %>% 
+  ggplot(aes(x = year, y = posts_per_thousand)) +
+  geom_col(fill = coffee) +
+  theme_wsj() +
+  scale_x_continuous(breaks = c(2010:2019)) +
+  labs(x = "", y = "Mentions per Thousand Posts", title = "Mentions of 'Drip' \non Reddit's Coffee Forum")
+```
+
+
+Cold brew
+
+```{r}
+bigram_year("cold brew") %>% 
+  ggplot(aes(x = year, y = posts_per_thousand)) +
+  geom_col(fill = coffee) +
+  theme_wsj() +
+  theme(
+    axis.title = element_text(),
+    axis.title.y = element_text(size = 11, face = "bold"),
+    axis.title.x = element_text(size = 11, face = "bold"),
+    legend.position = "bottom"
+  ) +
+  scale_x_continuous(breaks = c(2010:2019)) +
+
+  labs(x = "", y = "Mentions per Thousand Posts", title = "Mentions of 'Cold Brew'\non Reddit's Coffee Forum")
+```
+
+```{r}
+bigram_year("french press") %>% 
+  filter(year > 2010) %>% 
+  ggplot(aes(x = year, y = posts_per_thousand)) +
+  geom_col(fill = coffee) +
+  theme_wsj() +
+  theme(
+    axis.title = element_text(),
+    axis.title.y = element_text(size = 11, face = "bold"),
+    axis.title.x = element_text(size = 11, face = "bold"),
+    legend.position = "bottom"
+  ) +
+  scale_x_continuous(breaks = c(2010:2019)) +
+
+  labs(x = "", y = "Mentions per Thousand Posts", title = "Mentions of 'French Press' \non Reddit's Coffee Forum")
+```
+```{r}
+word_over_time_year("siphon") %>% 
+  filter(year > 2010) %>% 
+  ggplot(aes(x = year, y = posts_per_thousand)) +
+  geom_col(fill = coffee) +
+  theme_wsj() +
+  theme(
+    axis.title = element_text(),
+    axis.title.y = element_text(size = 11, face = "bold"),
+    axis.title.x = element_text(size = 11, face = "bold"),
+    legend.position = "bottom"
+  ) +
+  scale_x_continuous(breaks = c(2010:2019)) +
+
+  labs(x = "", y = "Mentions per Thousand Posts", title = "Mentions of 'Siphon' \non Reddit's Coffee Forum")
+```
+
+```{r}
+word_over_time_year("percolator") %>% 
+  filter(year > 2010) %>% 
+  ggplot(aes(x = year, y = posts_per_thousand)) +
+  geom_col(fill = coffee) +
+  theme_wsj() +
+  theme(
+    axis.title = element_text(),
+    axis.title.y = element_text(size = 11, face = "bold"),
+    axis.title.x = element_text(size = 11, face = "bold"),
+    legend.position = "bottom"
+  ) +
+  scale_x_continuous(breaks = c(2010:2019)) +
+
+  labs(x = "", y = "Mentions per Thousand Posts", title = "Mentions of 'Percolator' \non Reddit's Coffee Forum")
+```
+
+
+```{r}
+bigram_year("moka pot") %>% 
+  ggplot(aes(x = year, y = posts_per_thousand)) +
+  geom_col(fill = coffee) +
+  theme_wsj() +
+  theme(
+    axis.title = element_text(),
+    axis.title.y = element_text(size = 11, face = "bold"),
+    axis.title.x = element_text(size = 11, face = "bold"),
+    legend.position = "bottom"
+  ) +
+  scale_x_continuous(breaks = c(2010:2019)) +
+
+  labs(x = "", y = "Mentions per Thousand Posts", title = "Mentions of 'Moka Pot' \non Reddit's Coffee Forum")
+```
+
+Manual grinder
+```{r}
+bigram_year("manual grinder") %>% 
+  ggplot(aes(x = year, y = posts_per_thousand)) +
+  geom_col(fill = coffee) +
+  theme_wsj() +
+  theme(
+    axis.title = element_text(),
+    axis.title.y = element_text(size = 11, face = "bold"),
+    axis.title.x = element_text(size = 11, face = "bold"),
+    legend.position = "bottom"
+  ) +
+  scale_x_continuous(breaks = c(2010:2019)) +
+  labs(x = "", y = "Mentions per Thousand Posts", title = "Mentions of 'Manual Grinder' \non Reddit's Coffee Forum")
+```
+
+```{r}
+bigram_year("burr grinder") %>% 
+  ggplot(aes(x = year, y = posts_per_thousand)) +
+  geom_col(fill = coffee) +
+  theme_wsj() +
+  theme(
+    axis.title = element_text(),
+    axis.title.y = element_text(size = 11, face = "bold"),
+    axis.title.x = element_text(size = 11, face = "bold"),
+    legend.position = "bottom"
+  ) +
+  scale_x_continuous(breaks = c(2010:2019)) +
+  labs(x = "", y = "Mentions per Thousand Posts", title = "Mentions of 'Burr Grinder' \non Reddit's Coffee Forum")
+```
+
+
+# grinds
+
+```{r}
+bigram_year("coarse grind") %>% 
+  ggplot(aes(x = year, y = posts_per_thousand)) +
+  geom_col(fill = coffee) +
+  theme_wsj() +
+  theme(
+    axis.title = element_text(),
+    axis.title.y = element_text(size = 11, face = "bold"),
+    axis.title.x = element_text(size = 11, face = "bold"),
+    legend.position = "bottom"
+  ) +
+  scale_x_continuous(breaks = c(2010:2019)) +
+  labs(x = "", y = "Mentions per Thousand Posts", title = "Mentions of 'Coarse Grind' \non Reddit's Coffee Forum")
+```
+
+```{r}
+bigram_year("fine grind") %>% 
+  filter(year > 2010) %>% 
+  ggplot(aes(x = year, y = posts_per_thousand)) +
+  geom_col(fill = coffee) +
+  theme_wsj() +
+  theme(
+    axis.title = element_text(),
+    axis.title.y = element_text(size = 11, face = "bold"),
+    axis.title.x = element_text(size = 11, face = "bold"),
+    legend.position = "bottom"
+  ) +
+  scale_x_continuous(breaks = c(2010:2019)) +
+  labs(x = "", y = "Mentions per Thousand Posts", title = "Mentions of 'Fine Grind' \non Reddit's Coffee Forum")
+```
+
+# roasts
+```{r}
+bigram_year("dark roast") %>% 
+  filter(year > 2010) %>% 
+  ggplot(aes(x = year, y = posts_per_thousand)) +
+  geom_col(fill = coffee) +
+  theme_wsj() +
+  theme(
+    axis.title = element_text(),
+    axis.title.y = element_text(size = 11, face = "bold"),
+    axis.title.x = element_text(size = 11, face = "bold"),
+    legend.position = "bottom"
+  ) +
+  scale_x_continuous(breaks = c(2010:2019)) +
+
+  labs(x = "", y = "Mentions per Thousand Posts", title = "Mentions of 'Dark Roast' \non Reddit's Coffee Forum")
+```
+
+```{r}
+bigram_year("light roast") %>% 
+  filter(year > 2010) %>% 
+  ggplot(aes(x = year, y = posts_per_thousand)) +
+  geom_col(fill = coffee) +
+  theme_wsj() +
+  theme(
+    axis.title = element_text(),
+    axis.title.y = element_text(size = 11, face = "bold"),
+    axis.title.x = element_text(size = 11, face = "bold"),
+    legend.position = "bottom"
+  ) +
+  scale_x_continuous(breaks = c(2010:2019)) +
+
+  labs(x = "", y = "Mentions per Thousand Posts", title = "Mentions of 'Light Roast' \non Reddit's Coffee Forum")
+```
+
+
+```{r}
+bigram_year("medium roast") %>% 
+  filter(year > 2010) %>% 
+  ggplot(aes(x = year, y = posts_per_thousand)) +
+  geom_col(fill = coffee) +
+  theme_wsj() +
+  theme(
+    axis.title = element_text(),
+    axis.title.y = element_text(size = 11, face = "bold"),
+    axis.title.x = element_text(size = 11, face = "bold"),
+    legend.position = "bottom"
+  ) +
+  scale_x_continuous(breaks = c(2010:2019)) +
+
+  labs(x = "", y = "Mentions per Thousand Posts", title = "Mentions of 'Medium Roast' \non Reddit's Coffee Forum")
+```
+
+```{r}
+word_over_time_year("roast") %>% 
+  ggplot(aes(x = year, y = posts_per_thousand)) +
+  geom_col(fill = coffee) +
+  theme_wsj() +
+  theme(
+    axis.title = element_text(),
+    axis.title.y = element_text(size = 11, face = "bold"),
+    axis.title.x = element_text(size = 11, face = "bold"),
+    legend.position = "bottom"
+  ) +
+  scale_x_continuous(breaks = c(2010:2019)) +
+  labs(x = "", y = "Mentions per Thousand Posts", title = "Mentions of 'Roast' \non Reddit's Coffee Forum")
+```
+
+
+# roast generally
+
+```{r}
+bg %>% filter(word2 == "roast",
+              n > 500) %>% 
+  ggplot(aes(x = reorder(word1, n), y= n)) +
+  geom_col(aes(fill = word1)) +
+  scale_fill_manual(values = c(coffee, "#f0cf8d", "#925F01")) +
+  theme_wsj() +
+  theme(
+    axis.title = element_text(),
+    axis.title.y = element_text(size = 11, face = "bold"),
+    axis.title.x = element_text(size = 11, face = "bold"),
+    legend.position = "none"
+  ) +
+  coord_flip() +
+  labs(x = "", y = "Mentions", title = "Most-mentioned roasts on \nReddit's Coffee Forum")
+```
+
+
+
+
+
+# branded methods
+```{r}
+word_over_time_year("toddy") %>% 
+  ggplot(aes(x = year, y = posts_per_thousand)) +
+  geom_col(fill = coffee) +
+  theme_wsj() +
+  scale_x_continuous(breaks = c(2010:2019)) +
+  labs(x = "", y = "Mentions per Thousand Posts", title = "Mentions of 'Toddy' \non Reddit's Coffee Forum")
+```
+#aeropress
+
+```{r}
+word_over_time_year("aeropress") %>% 
+  filter(year > 2010) %>% 
+  ggplot(aes(x = year, y = posts_per_thousand)) +
+  geom_col(fill = coffee) +
+  theme_wsj() +
+  scale_x_continuous(breaks = c(2010:2019)) +
+  labs(x = "", y = "Mentions per Thousand Posts", title = "Mentions of 'Aeropress' \non Reddit's Coffee Forum")
+```
+
+
+
+#Percolator
+
+```{r}
+word_over_time_year("percolator") %>% 
+  ggplot(aes(x = year, y = posts_per_thousand)) +
+  geom_col(fill = coffee) +
+  theme_wsj() +
+  scale_x_continuous(breaks = c(2010:2019)) +
+  labs(x = "", y = "Mentions per Thousand Posts", title = "Mentions of 'Percolator' \non Reddit's Coffee Forum")
+```
+
+#Chemex
+
+```{r}
+word_over_time_year("chemex") %>% 
+  ggplot(aes(x = year, y = posts_per_thousand)) +
+  geom_col(fill = coffee) +
+  theme_wsj() +
+  scale_x_continuous(breaks = c(2010:2019)) +
+  labs(x = "", y = "Mentions per Thousand Posts", title = "Mentions of 'Chemex' \non Reddit's Coffee Forum")
+```
+
+```{r}
+word_over_time_year("bodum") %>% 
+  ggplot(aes(x = year, y = posts_per_thousand)) +
+  geom_col(fill = coffee) +
+  theme_wsj() +
+  scale_x_continuous(breaks = c(2010:2019)) +
+    theme(
+    axis.title = element_text(),
+    axis.title.y = element_text(size = 11, face = "bold"),
+    axis.title.x = element_text(size = 11, face = "bold"),
+    legend.position = "bottom"
+  ) +
+  labs(x = "", y = "Mentions per Thousand Posts", title = "Mentions of 'Bodum' \non Reddit's Coffee Forum")
+```
+
+
+
+```{r}
+word_over_time_year("bialetti") %>% 
+  ggplot(aes(x = year, y = posts_per_thousand)) +
+  geom_col(fill = coffee) +
+  theme_wsj() +
+  scale_x_continuous(breaks = c(2010:2019)) +
+  labs(x = "", y = "Mentions per Thousand Posts", title = "Mentions of 'Bialetti' \non Reddit's Coffee Forum")
+```
+Interesting
+High end
+
+```{r}
+word_over_time_year("hario") %>% 
+  ggplot(aes(x = year, y = posts_per_thousand)) +
+  geom_col(fill = coffee) +
+  theme_wsj() +
+    theme(
+    axis.title = element_text(),
+    axis.title.y = element_text(size = 11, face = "bold"),
+    axis.title.x = element_text(size = 11, face = "bold"),
+    legend.position = "bottom"
+  ) +
+  scale_x_continuous(breaks = c(2010:2019)) +
+  labs(x = "", y = "Mentions per Thousand Posts", title = "Mentions of 'Hario' \non Reddit's Coffee Forum")
+```
+
+```{r}
+word_over_time_year("gaggia") %>% 
+  ggplot(aes(x = year, y = posts_per_thousand)) +
+  geom_col(fill = coffee) +
+  theme_wsj() +
+    theme(
+    axis.title = element_text(),
+    axis.title.y = element_text(size = 11, face = "bold"),
+    axis.title.x = element_text(size = 11, face = "bold"),
+    legend.position = "bottom"
+  ) +
+  scale_x_continuous(breaks = c(2010:2019)) +
+  labs(x = "", y = "Mentions per Thousand Posts", title = "Mentions of 'Gaggia' \non Reddit's Coffee Forum")
+```
+
+
+Interesting to compare to broader market /google trends --> moving mass market
+
+```{r}
+bigram_year("blue bottle") %>% 
+  ggplot(aes(x = year, y = posts_per_thousand)) +
+  geom_col(fill = coffee) +
+  theme_wsj() +
+  theme(
+    axis.title = element_text(),
+    axis.title.y = element_text(size = 11, face = "bold"),
+    axis.title.x = element_text(size = 11, face = "bold")
+  ) +
+  scale_x_continuous(breaks = c(2010:2019)) +
+  labs(x = "", y = "Mentions per Thousand Posts", title = "Mentions of 'Blue Bottle' \non Reddit's Coffee Forum", subtitel = "per thousand posts")
+```
+
+
+
+```{r}
+word_over_time_year("burr") %>% 
+  ggplot(aes(x = year, y = posts_per_thousand)) +
+  geom_col() +
+  scale_x_continuous(breaks = c(2010:2019))
+```
+```{r}
+word_over_time_year("blade") %>% 
+  ggplot(aes(x = year, y = posts_per_thousand)) +
+  geom_col() +
+  scale_x_continuous(breaks = c(2010:2019))
+```
+
+```{r}
+word_over_time_year("gooseneck") %>% 
+  ggplot(aes(x = year, y = posts_per_thousand)) +
+  geom_col() +
+  scale_x_continuous(breaks = c(2010:2019))
+```
+kalita wave
+```{r}
+bigram_year("kalita wave") %>% 
+  ggplot(aes(x = year, y = posts_per_thousand)) +
+  geom_col() +
+  scale_x_continuous(breaks = c(2010:2019))
+```
+What's a steam wand
+```{r}
+bigram_year("steam wand") %>% 
+  ggplot(aes(x = year, y = posts_per_thousand)) +
+  geom_col() +
+  scale_x_continuous(breaks = c(2010:2019))
+```
+
+Buy buy buy!
+```{r}
+bigram_year("manual grinder") %>% 
+  ggplot(aes(x = year, y = posts_per_thousand)) +
+  geom_col() +
+  scale_x_continuous(breaks = c(2010:2019))
+```
+
+```{r}
+bigram_year("paper filter") %>% 
+  ggplot(aes(x = year, y = posts_per_thousand)) +
+  geom_col() +
+  scale_x_continuous(breaks = c(2010:2019))
+```
+
+```{r}
+bigram_year("light roast") %>% 
+  ggplot(aes(x = year, y = posts_per_thousand)) +
+  geom_col() +
+  scale_x_continuous(breaks = c(2010:2019))
+```
+
+```{r}
+bigram_year("dark roast") %>% 
+  ggplot(aes(x = year, y = posts_per_thousand)) +
+  geom_col() +
+  scale_x_continuous(breaks = c(2010:2019))
+```
+
+```{r}
+bigram_year("medium roast") %>% 
+  ggplot(aes(x = year, y = posts_per_thousand)) +
+  geom_col() +
+  scale_x_continuous(breaks = c(2010:2019))
+```
+
+```{r}
+library(ggplot2)
+library(igraph)
+library(ggraph)
+
+count_bigrams <- function(dataset) {
+  dataset %>%
+    unnest_tokens(bigram, text, token = "ngrams", n = 2) %>%
+    separate(bigram, c("word1", "word2"), sep = " ") %>%
+    filter(!word1 %in% stop_words$word,
+           !word2 %in% stop_words$word,
+           !word1 %in% custom_stop_words$word,
+           !word2 %in% custom_stop_words$word) %>%
+    count(word1, word2, sort = TRUE)
+}
+
+visualize_bigrams <- function(bigrams) {
+  set.seed(2016)
+  a <- grid::arrow(type = "closed", length = unit(.15, "inches"))
+  
+  bigrams %>%
+    filter(n > 450) %>% 
+    graph_from_data_frame() %>%
+    ggraph(layout = "fr") +
+    geom_edge_link(aes(edge_alpha = n), show.legend = FALSE, arrow = a) +
+    geom_node_point(color = "lightblue", size = 5) +
+    geom_node_text(aes(label = name), vjust = 1, hjust = 1) +
+    theme_void()
+}
+```
+Show this first
+
+```{r}
+bg <- count_bigrams(df)
+
+bg %>%
+  filter(!is.na(word1),
+         !is.na(word2)) %>% 
+  visualize_bigrams()
+```
+
+
+
+```{r}
+df %>%
+    mutate(month = as.Date(cut(df$dt, breaks = "month"))) %>% 
+    count(month) %>% 
+    ggplot(aes(x = month, y = n)) +
+    geom_col()
+```
+```{r}
+word_over_time_year <- function(ingredient){
+  tokenized_df %>%
+    mutate(yr = as.Date(cut(tokenized_df$dt, breaks = "year"))) %>% 
+    filter(word == ingredient) %>% 
+    distinct() %>% 
+    count(yr) %>% 
+    inner_join(posts_per_year) %>% 
+    mutate(count_per_thousand_posts = (1000 * n / n_posts_per_year))
+}
+```
+
+
+```{r}
+word_over_time_year("sperry") %>% 
+  ggplot(aes(x = yr, y = count_per_thousand_posts)) +
+  geom_col(fill = "navy") +
+  theme_minimal() +
+  labs(x = "year", y = "mentions per thousand posts", title = "Mentions of Sperry on r/MaleFashionAdvice")
+```
+```{r}
+word_over_time_year("bonobos") %>% 
+  ggplot(aes(x = yr, y = count_per_thousand_posts)) +
+  geom_col() +
+  theme_minimal()
+```
+```{r}
+word_over_time_year("converse") %>% 
+  ggplot(aes(x = yr, y = count_per_thousand_posts)) +
+  geom_col() +
+  theme_minimal()
+```
+
+```{r}
+word_over_time_year("vest") %>% 
+  ggplot(aes(x = yr, y = count_per_thousand_posts)) +
+  geom_col() +
+  theme_minimal()
+```
+
+```{r}
+word_over_time_year("sweater") %>% 
+  ggplot(aes(x = yr, y = count_per_thousand_posts)) +
+  geom_col() +
+  theme_minimal()
+```
+
+```{r}
+word_over_time_year("sperry")
+```
+Seems like 2017 there's an issue
+
+```{r}
+word_over_time_year("jeans") %>% 
+  ggplot(aes(x = yr, y = count_per_thousand_posts)) +
+  geom_col() +
+  theme_minimal()
+```
+
+
+
+```{r}
+word_over_time_year("shorts") %>% 
+  ggplot(aes(x = yr, y = count_per_thousand_posts)) +
+  geom_col() +
+  theme_minimal()
+```
+
+
+Monthly posts to nutrition
+```{r}
+tokenized_df %>%
+  filter(dt < as.Date('2019-01-01')) %>% 
+    mutate(mth = month(dt)) %>% 
+  filter(word == "fat") %>% 
+    distinct() %>% 
+    count(mth) %>% 
+    ggplot(aes(x = mth, y = n)) +
+    geom_col()
+```
+
